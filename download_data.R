@@ -1,32 +1,104 @@
 # TODO: 
-#-- Database to save all the informations
 #-- Latent Dirichlet allocation to distinguish which category has
 #   particular quote: film, movie, person 
+p_load("rvest", "magrittr", "stringi")
 
-library(rvest)
-library(tidyverse)
+# inspiration for this app:
 # https://github.com/lmu-applied-r/2019-CYOSS/blob/master/presentations/appliedR_talk2.pdf
+# xPath tutorial:
 # https://www.w3schools.com/xml/xpath_syntax.asp
 
-# The beginning link shouls be made using last title in database (firstly sorted by title)
-# beginnig_link = "https://pl.wikiquote.org/w/index.php?title=Specjalna:Wszystkie_strony"
-extend_database <- function(beginnig_link = "https://pl.wikiquote.org/w/index.php?title=Specjalna:Wszystkie_strony"){
-  #prepare containers
-  all_quotes_lst <- list()
-  scraped_links <- list()
-  next_page <- ""
+# 
+extend_database <- function(beginnig_link = "https://pl.wikiquote.org/w/index.php?title=Specjalna:Wszystkie_strony", db_connection = NULL, n_page = 1){
+ #TODO: beginning link should be set to last title in database (firstly sorted by title)
   
-  scraped_links_lst <- scrap_links(link = beginnig_link)
-  quotes_lst <- scrap_qoutes(links_vec = scraped_links_lst[[2]][1])
-  all_quotes_lst <- append(all_quotes_lst, quotes_lst)
-  next_page <- scraped_links_lst[[1]]
-  for(i in 1:3){
-    scraped_links_lst <- scrap_links(link = next_page)
-    quotes_lst <- scrap_qoutes(links_vec = scraped_links_lst[[2]][1])
-    all_quotes_lst <- append(all_quotes_lst, quotes_lst)
-    next_page <- scraped_links_lst[[1]]
+  # select only first link from every page - do not generate unnecessery movement
+  selected_links_vec <- TRUE # set logical TRUE to get all
+  #prepare containers
+  if(is.null(db_connection)){
+    all_quotes_lst <- list()
+    scraped_links <- list()
+    next_page <- ""
   }
+  # Scrap first page
+  scraped_links_lst <- scrap_links(link = beginnig_link)
+  quotes_lst <- scrap_qoutes(links_vec = scraped_links_lst[[2]][selected_links_vec])
+  next_page <- scraped_links_lst[[1]]
+  # Save links and quotes from first page
+  if(is.null(db_connection)){ # database not available
+  all_quotes_lst <- append(all_quotes_lst, quotes_lst)
+  scraped_links[[1]] <- scraped_links_lst[[2]][selected_links_vec]
+  } else { # save to DB
+    links_selected <- scraped_links_lst[[2]][selected_links_vec]
+    quotes_selected <- quotes_lst[selected_links_vec]
+    
+    for (i in 1:length(links_selected)){
+      # insert into links
+      author_processed <- db_insert_processing(quotes_selected[[i]]$author)
+      insert_links_query <- "INSERT INTO `links` (`id`, `link`, `title`) VALUES( NULL," 
+      insert_links_query <- paste0(insert_links_query, "\"", links_selected[i], "\",")
+      insert_links_query <- paste0(insert_links_query, "\"", author_processed, "\"")
+      insert_links_query <- paste0(insert_links_query, ");")
+      
+      dbSendQuery(db_connection, insert_links_query)
+      tit_descri_processed <- db_insert_processing(quotes_selected[[i]]$title_description)
+      for (j in 1:length(quotes_selected[[i]]$quotes)){
+        # insert into quotes
+        insert_quotes_query <- "INSERT INTO `quotes` (`id`,`quotes`,`nchar`,`title`,`description`) VALUES( NULL," 
+        insert_quotes_query <- paste0(insert_quotes_query, "\"", db_insert_processing(quotes_selected[[i]]$quotes[j]), "\",")
+        insert_quotes_query <- paste0(insert_quotes_query, "\"", nchar(quotes_selected[[i]]$quotes[j]), "\",")
+        insert_quotes_query <- paste0(insert_quotes_query, "\"", author_processed, "\",")
+        insert_quotes_query <- paste0(insert_quotes_query, "\"", tit_descri_processed, "\"")
+        insert_quotes_query <- paste0(insert_quotes_query, ");")
+        
+        dbSendQuery(db_connection, insert_quotes_query)
+      }
+    }
+  }
+  #------------------------------------------------------
+  # Scrap next pages in loop
+  for(iter in 1:n_page){
+    scraped_links_lst <- scrap_links(link = next_page)
+    quotes_lst <- scrap_qoutes(links_vec = scraped_links_lst[[2]][selected_links_vec])
+    next_page <- scraped_links_lst[[1]]
+    
+    if(is.null(db_connection)){
+    all_quotes_lst <- append(all_quotes_lst, quotes_lst)
+    scraped_links <- append(scraped_links, list(scraped_links_lst[[2]][selected_links_vec]))
+    } else{ # save to DB
+      links_selected <- scraped_links_lst[[2]][selected_links_vec]
+      quotes_selected <- quotes_lst[selected_links_vec]
+      
+      for (i in 1:length(links_selected)){
+        author_processed <- db_insert_processing(quotes_selected[[i]]$author)
+        # insert into links
+        insert_links_query <- "INSERT INTO `links` (`id`, `link`, `title`) VALUES( NULL," 
+        insert_links_query <- paste0(insert_links_query, "\"", links_selected[i], "\",")
+        insert_links_query <- paste0(insert_links_query, "\"", author_processed, "\"")
+        insert_links_query <- paste0(insert_links_query, ");")
+        
+        dbSendQuery(db_connection, insert_links_query)
+        tit_descri_processed <- db_insert_processing(quotes_selected[[i]]$title_description)
+        for (j in 1:length(quotes_selected[[i]]$quotes)){
+          # insert into quotes
+          insert_quotes_query <- "INSERT INTO `quotes` (`id`,`quotes`,`nchar`,`title`,`description`) VALUES( NULL," 
+        insert_quotes_query <- paste0(insert_quotes_query, "\"", db_insert_processing(quotes_selected[[i]]$quotes), "\",")
+        insert_quotes_query <- paste0(insert_quotes_query, "\"", nchar(quotes_selected[[i]]$quotes[j]), "\",")
+        insert_quotes_query <- paste0(insert_quotes_query, "\"", author_processed, "\",")
+        insert_quotes_query <- paste0(insert_quotes_query, "\"", tit_descri_processed, "\"")
+        insert_quotes_query <- paste0(insert_quotes_query, ");")
+        
+        dbSendQuery(db_connection, insert_quotes_query)
+      }
+      }
+    }
+  }
+  
+  if(is.null(db_connection)){
   list("output" = all_quotes_lst, "scraped_links" = scraped_links, "next_page" = next_page)
+  } else {
+    TRUE
+  }
 }
 
 scrap_links <- function(link){
@@ -69,4 +141,9 @@ scrap_qoutes <- function(links_vec){
     output <- append(output,list(list("author" = page_heading_str, "quotes" = page_quotes_vec, "title_description" = title_description_str)))
   }
   output
+}
+
+db_insert_processing <- function(sentence){
+  sentence <- stri_replace_all(sentence, fixed = "\"", replacement = "'")
+  sentence
 }
